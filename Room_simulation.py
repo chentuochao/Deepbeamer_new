@@ -175,7 +175,8 @@ def simulateBackground(background_audio):
                                  materials=pra.Material(absorption))
     room.extrude(height)
     mic_array = generate_mic_array(R_MIC, N_MIC, (0,0,H))
-    room.add_microphone_array(pra.MicrophoneArray(mic_array, fs))
+    R_gt=mic_array[:, 0].reshape((3,1))
+    room.add_microphone_array(pra.MicrophoneArray(R_gt, fs))
     room.add_source(bg_loc, signal=background_audio)
 
     room.image_source_model()
@@ -199,7 +200,7 @@ class Audio_Set:
     def __len__(self):
         return len(self.audio_files)
     def __read_audio(self,file):
-        audio, _ = librosa.load(self.path + '/' + file, sr=fs, mono=True)
+        audio, _ = librosa.load(self.path + file, sr=fs, mono=True)
         return audio
     def __getitem__(self, idx):
         return self.__read_audio(self.audio_files[idx][0]),  np.array(self.audio_files[idx][1])
@@ -269,7 +270,7 @@ class OnlineSimulationDataset(Dataset):
             return None
         #print("sssssssssss")
         if self.cache_folder is not None:
-            cache_path=self.cache_folder+'/'+str(idx)+'-'+str(self.seed)+'.npz'
+            cache_path=self.cache_folder+str(idx)+'-'+str(self.seed)+'.npz'
             
             if cache_path not in self.cache_history:
                 self.cache_history.append(cache_path)
@@ -279,9 +280,10 @@ class OnlineSimulationDataset(Dataset):
                     first=self.cache_history[0]
                     os.remove(first)
                     self.cache_history=self.cache_history[1:]
-                
+            #print(cache_path, os.path.exists(cache_path))
             if os.path.exists(cache_path):
                 cache_result=np.load(cache_path, allow_pickle=True)['data']
+                #print("load")
                 return cache_result[0], cache_result[1], cache_result[2]
         else:
             cache_path=None
@@ -326,10 +328,18 @@ class OnlineSimulationDataset(Dataset):
         #if np.random.rand()<self.low_volume_ratio:
         #    voices[0]*=np.random.uniform(self.low_volume_range[0], self.low_volume_range[1])
         
-        if self.special_noise_ratio>np.random.rand():
-            noise=self.truncator.process(self.noises[np.random.choice(len(self.noises))][0])
-        else:
-            noise=np.random.randn(self.truncator.get_length())
+        while 1:
+            if self.special_noise_ratio>np.random.rand():
+                noise=self.truncator.process(self.noises[np.random.choice(len(self.noises))][0])
+            else:
+                noise=np.random.randn(self.truncator.get_length())
+            
+            background=simulateBackground(noise)
+            #generate the simulated noise sound
+
+            background = background[:, :self.truncator.get_length()]
+            if power(background) > 0: break
+            else: print("invalid noise, generate again!")
 
         no_reverb=(np.random.rand()<self.no_reverb_ratio)
         max_order=0 if no_reverb else self.max_order
@@ -342,19 +352,23 @@ class OnlineSimulationDataset(Dataset):
             mixed, premix_w_reverb, premix, new_angles=simulateSound(room_dim, R_loc, source_loc, voices, rt60, None, max_order)
         #generate the simulated speech sound
         
+
         gt = np.sum(premix[mix_indexes, :, :], axis=0) # generate groundtruth
         #print(mixed.shape, gt.shape)
 
-        background=simulateBackground(noise)
-        #generate the simulated noise sound
+        
+
         snr=np.random.uniform(self.additive_noise_min_snr, self.additive_noise_max_snr)
         
         # trucate to the same length
         mixed=mixed[:, :self.truncator.get_length()]
-        background=background[:, :self.truncator.get_length()]
-        
+        #background=background[:, :self.truncator.get_length()]
+        gt = gt[:, :self.truncator.get_length()]
+
+        #print( background.shape, mixed.shape)
         total, background=mix(mixed, background, snr)
-        
+        #print(total.shape, background.shape, mixed.shape)
+
         #new_angles[0]+=(np.random.rand()*2-1)*self.angle_dev
 
         

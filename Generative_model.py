@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import functools
-
+import asteroid
 #------------loss function --------------
 
 class SISDRLoss(nn.Module):
@@ -34,9 +34,20 @@ class FuseLoss(nn.Module):
         self.r=r
         
     def forward(self, signal, gt):
+        #print(signal.shape, gt.shape)
         if len(signal.shape)==2:
             signal=signal.unsqueeze(1)
+            gt = gt.unsqueeze(1)
+        a = signal[..., self.offset:]
+
+        b = gt[..., self.offset:]*self.r + torch.mean(self.sisdrloss(signal[..., self.offset:], gt[..., self.offset:]))
+        #print(a)
+        #print(b)
+        #print(self.sisdrloss(signal[..., self.offset:], gt[..., self.offset:]))
+        #print(self.l1loss(a, b))
+        #print("----------------------------")
         return self.l1loss(signal[..., self.offset:], gt[..., self.offset:])*self.r+torch.mean(self.sisdrloss(signal[..., self.offset:], gt[..., self.offset:]))
+    
 
 
 class ComplexSTFTWrapper(nn.Module):
@@ -49,8 +60,9 @@ class ComplexSTFTWrapper(nn.Module):
     def transform(self, input_data):
         B,C,L=input_data.shape
         input_data=input_data.view(B*C, L)
-        r=torch.stft(input_data, n_fft=self.win_length, hop_length=self.hop_length, center=self.center, return_complex=False)
+        r=torch.stft(input_data, n_fft=self.win_length, hop_length=self.hop_length, center=self.center, onesided=False, return_complex=False)
         _,F,T,_=r.shape
+        #print("transform:  ", r.shape)
         r=r.view(B,C,F,T,2)
         return (r[...,0], r[..., 1])
                               
@@ -60,7 +72,8 @@ class ComplexSTFTWrapper(nn.Module):
         r=r.flatten(0,1)
         i=i.flatten(0,1)
         input_data=torch.stack([r,i], dim=-1)
-        r=torch.istft(input_data, n_fft=self.win_length, hop_length=self.hop_length, center=self.center, return_complex=False) # B, L
+        #print("reverse:   ", input_data.shape)
+        r=torch.istft(input_data, n_fft=self.win_length, hop_length=self.hop_length, center=self.center, onesided=False,return_complex=False) # B, L
         return r.view(B,C,-1)
         
     def forward(self, x):
@@ -156,7 +169,7 @@ class AudioVisual5layerUNet(nn.Module):
         self.audionet_convlayer3 = unet_conv(ngf * 2, ngf * 4)
         self.audionet_convlayer4 = unet_conv(ngf * 4, ngf * 8)
         self.audionet_convlayer5 = unet_conv(ngf * 8, ngf * 8)
-        self.audionet_upconvlayer1 = unet_upconv(ngf * 16, ngf * 8)
+        self.audionet_upconvlayer1 = unet_upconv(ngf * 8 + 13, ngf * 8)
         self.audionet_upconvlayer2 = unet_upconv(ngf * 16, ngf *4)
         self.audionet_upconvlayer3 = unet_upconv(ngf * 8, ngf * 2)
         self.audionet_upconvlayer4 = unet_upconv(ngf * 4, ngf)
@@ -168,10 +181,16 @@ class AudioVisual5layerUNet(nn.Module):
         audio_conv3feature = self.audionet_convlayer3(audio_conv2feature)
         audio_conv4feature = self.audionet_convlayer4(audio_conv3feature)
         audio_conv5feature = self.audionet_convlayer5(audio_conv4feature)
+        
+        #print(select_vector.size(), audio_conv1feature.size(),audio_conv2feature.size(), audio_conv3feature.size(), audio_conv4feature.size(), audio_conv5feature.size())
+        select_vector = torch.unsqueeze(select_vector, -1)
+        select_vector = torch.unsqueeze(select_vector, -1)
 
         select_vector = select_vector.repeat(1, 1, audio_conv5feature.shape[2], audio_conv5feature.shape[3])
+        #print(select_vector.size())
         audioVisual_feature = torch.cat((select_vector, audio_conv5feature), dim=1)
         audio_upconv1feature = self.audionet_upconvlayer1(audioVisual_feature)
+        #print(audio_upconv1feature.size(), audio_conv4feature.size(),  audio_upconv1feature.size() )
         audio_upconv2feature = self.audionet_upconvlayer2(torch.cat((audio_upconv1feature, audio_conv4feature), dim=1))
         audio_upconv3feature = self.audionet_upconvlayer3(torch.cat((audio_upconv2feature, audio_conv3feature), dim=1))
         audio_upconv4feature = self.audionet_upconvlayer4(torch.cat((audio_upconv3feature, audio_conv2feature), dim=1))
@@ -180,7 +199,7 @@ class AudioVisual5layerUNet(nn.Module):
 
 
 class Earbud_Net(nn.Module):
-    def __init__(self, block_size, unet_num_layers=7, ngf=64, input_nc=1, output_nc=1, weights=''):
+    def __init__(self, block_size = 64, unet_num_layers=5, ngf=64, input_nc=1, output_nc=1, weights=''):
         super(Earbud_Net, self).__init__()
         self.stft=ComplexSTFTWrapper(hop_length=block_size//2, win_length=block_size*2)
         if unet_num_layers == 7:
@@ -195,18 +214,22 @@ class Earbud_Net(nn.Module):
             self.net.load_state_dict(torch.load(weights))
 
     def forward(self, wav, select_vector):
-        mag, pha=self.stft.transform(wav) #B,C,F,T, the spectrum process
-        B,Cin,_,T=mag.shape
-
+        #print(wav.dtype)
+        rea, imag=self.stft.transform(wav) #B,C,F,T, the spectrum process
+        B,Cin,_,T=rea.shape
+        #print(wav.shape, rea.shape)
         mag = torch.abs(torch.sqrt(torch.pow(rea, 2) + torch.pow(imag, 2)))
         pha = torch.atan2(imag.data, rea.data)
+        #print(mag.size(),select_vector.size(),  mag.dtype, select_vector.dtype  )
         mask = self.net(mag, select_vector)
-
+        #print(mask.size())
         pred_mag = mask*mag
         pred_real = pred_mag * torch.cos(pha)
         pred_image = pred_mag * torch.sin(pha)
 
         pred_audio = self.stft.reverse((pred_real, pred_image))
+        #print("pred_audio: ", pred_audio.shape)
+        return pred_audio
 
 
 

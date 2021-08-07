@@ -22,6 +22,9 @@ TEST=False
 
 USE_24K=True
 
+MAX_PURE_NUM = 500
+MAX_MIX_NUM = 300
+
 # --------------read the classes hierarchy from json file ------------------- 
 include_voice_class = ["Singing", "Speech",  "Motor vehicle (road)", "Rail transport", "Tools",
  "Plucked string instrument", "Violin, fiddle","Keyboard (musical)", "Drum", "Dog", "Bird", "Water", "Wind" ]
@@ -54,7 +57,7 @@ with open(json_file) as f:
     for item in classes_lists:
         name = item["name"]
         if name in include_voice_class:
-            print(name)
+            #print(name)
             all_ids = []
             new_index = find_all_children(classes_lists, index, all_ids)
             valid_classes[name] = all_ids    
@@ -64,6 +67,7 @@ with open(json_file) as f:
 
 
 # --------------read the audioset from audio files -------------------
+audio_folder = "../source_data/"
 
 with open("eval_segments.csv") as f:
     reader = csv.reader(f)
@@ -74,6 +78,7 @@ with open("eval_segments.csv") as f:
 
     numbers = np.zeros(num_classes)
     mono_numbers = np.zeros(num_classes)
+    non_mono_numbers = np.zeros(num_classes)
     pure_numbers = np.zeros(num_classes)
 
     voice_data = []
@@ -86,7 +91,7 @@ with open("eval_segments.csv") as f:
         temp_labels = np.zeros(num_classes)
         filename = row[0] + '_' + row[1][1:] + "_out.wav"
         #print("audioset/" + filename)
-        if not os.path.exists("audioset/" + filename): continue
+        if not os.path.exists(audio_folder + filename): continue
         #print(filename)
         labels = row[3:]
         valid_labels = []
@@ -107,19 +112,30 @@ with open("eval_segments.csv") as f:
         if len(valid_labels) <= 0: noise_data.append((filename, temp_labels))
         else:
             if len(valid_labels) == 1:  
-                mono_numbers[valid_labels[0]] += 1
-                pure_data.append((filename, temp_labels))
+                if mono_numbers[valid_labels[0]] < MAX_PURE_NUM:  
+                    pure_data.append((filename, temp_labels))
+                    mono_numbers[valid_labels[0]] += 1
                 if with_noise == False: 
                     pure_numbers[valid_labels[0]] += 1
                     #pure_data.append((filename, temp_labels))
-            else: mix_data.append((filename, temp_labels))
-            voice_data.append((filename, temp_labels))
+            else:
+                if_add = True
+                for index in valid_labels:
+                    if non_mono_numbers[index] >= MAX_MIX_NUM:
+                        if_add = False
 
+                if if_add:
+                    mix_data.append((filename, temp_labels))
+                    for index in valid_labels:
+                        non_mono_numbers[index] += 1
+            voice_data.append((filename, temp_labels))
+    print("#------------------------Dataset structure--------------------#")
     for i in range(0, num_classes):
-        print(include_voice_class[i], numbers[i], mono_numbers[i], pure_numbers[i])
+        print(include_voice_class[i], numbers[i], mono_numbers[i], non_mono_numbers[i],pure_numbers[i])
     f.close()
-    print("Voice WAV FILe number: ", len(voice_data))
+    print("Voice WAV FILe number: ", len(pure_data), len(mix_data))
     print("Noise WAV FILe number: ", len(noise_data))
+    print("#-------------------------------------------------------------#")
 # ------------ generate the simulated voice -----------
 # test simulation dataset and truncate
 simulation_config={
@@ -127,7 +143,7 @@ simulation_config={
     'min_snr':5,
     'max_snr':25,
     'special_noise_ratio':0.9,
-    'pure_ratio': 0.5,
+    'pure_ratio': 0.8,
     'source_dist':[0.15, 0.4, 0.4, 0.05],
     'min_angle_diff':25,
     'max_rt60': 0.4,
@@ -147,12 +163,12 @@ simulation_config={
 
 
 def generate_data(if_TEST, seg_length = 3, TRAIN_NUM = 5400, TEST_NUM= 600):
-    truncator=RandomTruncate(seg_length*fs, 5, 0.4)
+    truncator=RandomTruncate(143328, 5, 0.4)#(seg_length*fs, 5, 0.4)
 
-    voice_set = Audio_Set('audioset', voice_data)
-    noise_set = Audio_Set('audioset', noise_data)
-    pure_set  = Audio_Set('audioset', pure_data)
-    mix_set = Audio_Set('audioset', mix_data)
+    voice_set = Audio_Set(audio_folder, voice_data)
+    noise_set = Audio_Set(audio_folder, noise_data)
+    pure_set  = Audio_Set(audio_folder, pure_data)
+    mix_set = Audio_Set(audio_folder, mix_data)
 
     ipd.Audio(voice_set[0][0], rate=fs)
     ipd.Audio(noise_set[0][0], rate=fs)
