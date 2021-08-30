@@ -2,52 +2,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import functools
-import asteroid
+
 #------------loss function --------------
-
-class SISDRLoss(nn.Module):
-    def __init__(self, offset, l=1e-3):
-        super().__init__()
-        
-        self.l=l
-        self.offset=offset
-        
-    def forward(self, signal, gt):
-        return torch.sum(asteroid.losses.pairwise_neg_sisdr(signal[..., self.offset:], gt[..., self.offset:]))+self.l*torch.sum(signal**2)/signal.shape[-1]          
-    
-class L1Loss(nn.Module):
-    def __init__(self, offset):
-        super().__init__()
-        self.offset=offset
-        self.loss=nn.L1Loss()
-        
-    def forward(self, signal, gt):
-        return self.loss(signal[..., self.offset:], gt[..., self.offset:])
-    
-    
-class FuseLoss(nn.Module):
-    def __init__(self, offset, r=50):
-        super().__init__()
-        self.offset=offset
-        self.l1loss=nn.L1Loss()
-        self.sisdrloss=asteroid.losses.pairwise_neg_sisdr
-        self.r=r
-        
-    def forward(self, signal, gt):
-        #print(signal.shape, gt.shape)
-        if len(signal.shape)==2:
-            signal=signal.unsqueeze(1)
-            gt = gt.unsqueeze(1)
-        a = signal[..., self.offset:]
-
-        b = gt[..., self.offset:]*self.r + torch.mean(self.sisdrloss(signal[..., self.offset:], gt[..., self.offset:]))
-        #print(a)
-        #print(b)
-        #print(self.sisdrloss(signal[..., self.offset:], gt[..., self.offset:]))
-        #print(self.l1loss(a, b))
-        #print("----------------------------")
-        return self.l1loss(signal[..., self.offset:], gt[..., self.offset:])*self.r+torch.mean(self.sisdrloss(signal[..., self.offset:], gt[..., self.offset:]))
-    
 
 
 class ComplexSTFTWrapper(nn.Module):
@@ -160,7 +116,7 @@ class AudioVisual7layerUNet(nn.Module):
         return mask_prediction
 
 class AudioVisual5layerUNet(nn.Module):
-    def __init__(self, ngf=64, input_nc=2, output_nc=2):
+    def __init__(self, ngf=64, input_nc=2, output_nc=2, num_class = 2):
         super(AudioVisual5layerUNet, self).__init__()
 
         #initialize layers
@@ -169,7 +125,7 @@ class AudioVisual5layerUNet(nn.Module):
         self.audionet_convlayer3 = unet_conv(ngf * 2, ngf * 4)
         self.audionet_convlayer4 = unet_conv(ngf * 4, ngf * 8)
         self.audionet_convlayer5 = unet_conv(ngf * 8, ngf * 8)
-        self.audionet_upconvlayer1 = unet_upconv(ngf * 8 + 13, ngf * 8)
+        self.audionet_upconvlayer1 = unet_upconv(ngf * 8 + num_class, ngf * 8)
         self.audionet_upconvlayer2 = unet_upconv(ngf * 16, ngf *4)
         self.audionet_upconvlayer3 = unet_upconv(ngf * 8, ngf * 2)
         self.audionet_upconvlayer4 = unet_upconv(ngf * 4, ngf)
@@ -199,13 +155,13 @@ class AudioVisual5layerUNet(nn.Module):
 
 
 class Earbud_Net(nn.Module):
-    def __init__(self, block_size = 64, unet_num_layers=5, ngf=64, input_nc=1, output_nc=1, weights=''):
+    def __init__(self, num_class = 2, block_size = 64, unet_num_layers=5, ngf=64, input_nc=1, output_nc=1, weights=''):
         super(Earbud_Net, self).__init__()
         self.stft=ComplexSTFTWrapper(hop_length=block_size//2, win_length=block_size*2)
         if unet_num_layers == 7:
             self.net = AudioVisual7layerUNet(ngf, input_nc, output_nc)
         elif unet_num_layers == 5:
-            self.net = AudioVisual5layerUNet(ngf, input_nc, output_nc)
+            self.net = AudioVisual5layerUNet(ngf, input_nc, output_nc, num_class)
 
         self.net.apply(weights_init)
 
